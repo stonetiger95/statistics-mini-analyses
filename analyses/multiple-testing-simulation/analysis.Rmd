@@ -1,0 +1,102 @@
+---
+title: "반복 검정에서 거짓 양성은 어떻게 누적되는가"
+output:
+  html_document:
+    toc: true
+    self_contained: true
+    number_sections: true
+lang: ko
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.path = "figures/", fig.width = 8, fig.height = 4.8,
+  dpi = 120
+)
+```
+
+# 분석 질문
+
+많은 가설을 동시에 검정할 때 개별 p-value 기준만 사용하면 거짓 양성이 어떻게 누적되는가? Bonferroni와 Benjamini–Hochberg(BH) 보정은 오류와 검정력의 균형을 어떻게 바꾸는가?
+
+# 시뮬레이션 설계
+
+기존 분석의 설정을 유지한다. 한 반복에서 10,000개 가설 중 약 10%는 평균 2인 대립분포, 나머지는 표준정규 귀무분포에서 생성한다. 양측 z-test의 p-value를 사용하고 이를 1,000번 반복한다.
+
+```{r simulation}
+set.seed(12345)
+
+m <- 10000L
+B <- 1000L
+alpha <- 0.05
+pi1 <- 0.10
+effect <- 2
+methods <- c("Unadjusted", "Bonferroni", "BH-FDR")
+
+n_reject <- false_positive <- matrix(0, B, length(methods))
+fwer <- matrix(FALSE, B, length(methods))
+fdp <- power <- matrix(0, B, length(methods))
+
+for (b in seq_len(B)) {
+  alternative <- rbinom(m, 1, pi1) == 1
+  z <- rnorm(m)
+  z[alternative] <- rnorm(sum(alternative), mean = effect)
+  p <- 2 * (1 - pnorm(abs(z)))
+
+  reject <- list(
+    p < alpha,
+    p.adjust(p, method = "bonferroni") < alpha,
+    p.adjust(p, method = "BH") < alpha
+  )
+
+  for (j in seq_along(methods)) {
+    r <- reject[[j]]
+    n_reject[b, j] <- sum(r)
+    false_positive[b, j] <- sum(r & !alternative)
+    fwer[b, j] <- false_positive[b, j] > 0
+    fdp[b, j] <- if (sum(r) == 0) 0 else false_positive[b, j] / sum(r)
+    power[b, j] <- sum(r & alternative) / sum(alternative)
+  }
+}
+
+result <- data.frame(
+  method = methods,
+  mean_rejections = colMeans(n_reject),
+  mean_false_positives = colMeans(false_positive),
+  fwer = colMeans(fwer),
+  mean_fdp = colMeans(fdp),
+  power = colMeans(power)
+)
+knitr::kable(result, digits = 3,
+             caption = "10,000개 가설 × 1,000회 반복 결과")
+```
+
+# 오류율과 검정력의 균형
+
+```{r comparison-plot}
+plot_values <- rbind(result$mean_fdp, result$power)
+colnames(plot_values) <- result$method
+rownames(plot_values) <- c("Mean FDP", "Power")
+barplot(plot_values, beside = TRUE, ylim = c(0, 1),
+        col = c("#D95F0E", "#2C7FB8"),
+        ylab = "비율", main = "거짓 발견 비율과 검정력")
+legend("topright", rownames(plot_values),
+       fill = c("#D95F0E", "#2C7FB8"), bty = "n")
+```
+
+보정하지 않은 분석은 개별 귀무가설마다 5% 기준을 적용하지만, 참 귀무가설이 약 9,000개이므로 거짓 양성이 누적된다. Bonferroni는 전체 검정 묶음에서 하나 이상의 거짓 양성이 생길 확률(FWER)을 강하게 제어하지만 신호도 많이 놓친다. BH는 FWER 자체를 제어하는 방법이 아니라, 기각된 결과 중 거짓 발견의 기대 비율을 관리하는 방법이다.
+
+# 판단
+
+- 확인적 분석에서 단 하나의 거짓 양성도 큰 비용을 만들면 Bonferroni 같은 FWER 제어가 맞을 수 있다.
+- 많은 후보 중 후속 검증할 신호를 선별한다면 BH-FDR이 오류와 발견 수 사이의 현실적인 절충을 제공한다.
+- 보정하지 않은 p-value를 수천 개 나열하는 것은 개별 검정의 유의수준과 전체 분석의 오류 위험을 혼동한다.
+
+# 한계
+
+모든 검정은 독립이며 대립가설의 효과크기는 동일하다고 가정했다. 실제 고차원 자료의 상관, 희소성, 효과크기 분포, 검정통계량의 모형 오지정은 보정 방법의 실제 성능을 바꿀 수 있다. 이 결과는 특정 분야의 최적 보정법을 입증하는 것이 아니라 multiple testing correction이 필요한 이유를 보여주는 직관적 사례다.
+
+```{r session-info}
+sessionInfo()
+```

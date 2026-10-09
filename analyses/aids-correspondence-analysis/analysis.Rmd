@@ -1,0 +1,122 @@
+---
+title: "AZT 처치 시점과 AIDS 증상 범주의 상대적 구조"
+output:
+  html_document:
+    toc: true
+    self_contained: true
+    number_sections: true
+lang: ko
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.path = "figures/", fig.width = 8, fig.height = 4.5,
+  dpi = 120
+)
+```
+
+# 분석 질문
+
+AZT를 즉시 투여한 집단과 면역 지표가 더 악화될 때까지 투여를 미룬 집단에서 AIDS 증상 여부의 상대적 연관 구조는 어떻게 나타나는가?
+
+# 분할표
+
+자료는 338명의 3년 추적 결과를 집계한 2×2 표다. 자료 정의는 Agresti(2002)에 수록되었고 R의 `brglm2::aids` 문서에도 공개되어 있다.
+
+```{r table}
+O <- matrix(
+  c(25, 145,
+    44, 124),
+  nrow = 2, byrow = TRUE,
+  dimnames = list(
+    AZT = c("Immediate", "Deferred"),
+    Symptoms = c("Yes", "No")
+  )
+)
+knitr::kable(O, caption = "AZT 처치 시점 × AIDS 증상 집계표")
+
+row_percent <- 100 * prop.table(O, margin = 1)
+knitr::kable(row_percent, digits = 1,
+             caption = "처치 집단별 증상 비율(%)")
+```
+
+즉시 처치군의 증상 발생 비율은 14.7%, 지연 처치군은 26.2%다.
+
+# 독립성 검정
+
+```{r chi-square}
+chi <- chisq.test(O, correct = FALSE)
+cramers_v <- sqrt(unname(chi$statistic) / sum(O))
+test_result <- data.frame(
+  chi_square = unname(chi$statistic),
+  df = unname(chi$parameter),
+  p_value = chi$p.value,
+  cramers_v = cramers_v,
+  min_expected = min(chi$expected)
+)
+knitr::kable(test_result, digits = 4,
+             caption = "Pearson 카이제곱 독립성 검정")
+```
+
+기대도수는 모두 충분히 크고, 독립성 가정에서 관찰된 차이보다 큰 차이를 얻을 p-value는 0.0088이다. 효과크기 Cramér's V는 0.142로, 통계적으로 유의한 차이가 강한 연관성을 뜻하지는 않는다. 집계표만으로 임상적 인과효과나 일반화 가능성을 확정할 수도 없다.
+
+# 대응분석
+
+```{r correspondence-analysis}
+P <- O / sum(O)
+r <- rowSums(P)
+c_mass <- colSums(P)
+Dr_inv_sqrt <- diag(1 / sqrt(r))
+Dc_inv_sqrt <- diag(1 / sqrt(c_mass))
+
+standardized <- Dr_inv_sqrt %*%
+  (P - outer(r, c_mass)) %*%
+  Dc_inv_sqrt
+decomp <- svd(standardized)
+
+eigenvalues <- decomp$d^2
+row_coord <- Dr_inv_sqrt %*% decomp$u %*% diag(decomp$d)
+col_coord <- Dc_inv_sqrt %*% decomp$v %*% diag(decomp$d)
+rownames(row_coord) <- rownames(O)
+rownames(col_coord) <- colnames(O)
+
+inertia <- data.frame(
+  dimension = seq_along(eigenvalues),
+  eigenvalue = eigenvalues,
+  percent = 100 * eigenvalues / sum(eigenvalues)
+)
+knitr::kable(inertia, digits = 5,
+             caption = "대응분석 고유값과 관성 비율")
+```
+
+2×2 분할표에서는 두 범주의 연관 구조가 하나의 축으로 요약된다. 두 번째 축은 수치 오차 수준이므로 2차원 평면 대신 1차원에서 상대적 위치를 표시한다.
+
+```{r ca-plot}
+row_x <- row_coord[, 1]
+col_x <- col_coord[, 1]
+xlim <- range(c(row_x, col_x)) * 1.15
+plot(NA, xlim = xlim, ylim = c(-0.4, 0.4),
+     xlab = "Correspondence dimension 1", ylab = "",
+     yaxt = "n", main = "1차원 대응분석 좌표")
+abline(v = 0, col = "grey70")
+points(row_x, rep(0.12, length(row_x)), pch = 16, col = "#2C7FB8")
+text(row_x, rep(0.12, length(row_x)), labels = names(row_x), pos = 3)
+points(col_x, rep(-0.12, length(col_x)), pch = 17, col = "#D95F0E")
+text(col_x, rep(-0.12, length(col_x)), labels = names(col_x), pos = 1)
+legend("topright", c("AZT timing", "Symptoms"), pch = c(16, 17),
+       col = c("#2C7FB8", "#D95F0E"), bty = "n")
+```
+
+즉시 처치와 무증상, 지연 처치와 증상 있음이 각각 같은 상대적 방향에 놓인다. 즉시 처치군에서 증상 발생 비율이 더 낮게 관찰됐지만, 이 그림은 독립모형에서 벗어난 상대적 구조를 요약할 뿐이다. 점 사이 거리나 방향을 임상적 효과크기 또는 인과 방향으로 읽어서는 안 된다.
+
+# 한계
+
+- 공개된 집계표만으로 표본 모집, 무작위화 실행, 추적 손실, 기저 위험을 재검증할 수 없다.
+- 원본 분석의 race×AZT×symptoms Burt matrix는 표본 정의와 다중 대응분석 해석을 더 명확히 해야 하므로 주 분석에서 제외했다.
+- 2×2 표는 연관 구조가 하나의 축으로만 표현되므로 CA의 차원 축소 이점이 작다. 카이제곱 검정, Cramér's V와 조건부 비율이 더 직접적이다.
+- 시각적 방향과 근접성은 범주 간 상대적 연관이며 임상적 인과관계가 아니다.
+
+```{r session-info}
+sessionInfo()
+```

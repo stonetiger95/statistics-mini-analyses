@@ -1,0 +1,150 @@
+---
+title: "여러 육상 기록에 공통된 구조는 무엇인가"
+output:
+  html_document:
+    toc: true
+    self_contained: true
+    number_sections: true
+lang: ko
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.path = "figures/", fig.width = 8, fig.height = 5.2,
+  dpi = 120
+)
+```
+
+# 분석 질문
+
+여자 육상 7종목 국가기록에 공통된 변동 축이 있는가? 총분산을 요약하는 PCA와 공통분산을 모형화하는 FA는 어떤 공통점과 차이를 보이는가?
+
+# 데이터와 표준화
+
+자료는 2005년 기준 54개 국가의 100m, 200m, 400m, 800m, 1500m, 3000m, 마라톤 기록이다. 재배포 허가가 분명하지 않아 원자료는 포함하지 않는다.
+
+```{r load-data}
+data_path <- "../../data/raw/trackrecord2005-women.txt"
+if (!file.exists(data_path)) {
+  stop("육상 원자료가 없습니다. data/README.md의 획득·배치 안내를 확인하세요.")
+}
+
+records <- read.table(data_path, header = TRUE, check.names = FALSE)
+colnames(records) <- c("100m", "200m", "400m", "800m",
+                       "1500m", "3000m", "Marathon")
+X <- as.matrix(records)
+stopifnot(nrow(X) == 54, ncol(X) == 7)
+knitr::kable(head(records), digits = 2,
+             caption = "자료 구조 예시")
+```
+
+단거리 기록은 초, 중·장거리 기록은 분 단위여서 공분산행렬은 큰 단위를 가진 변수가 지배할 수 있다. 모든 분석은 표준화 자료, 즉 상관행렬을 기준으로 수행한다.
+
+# PCA
+
+```{r pca}
+R <- cor(X)
+eig <- eigen(R)
+variance <- eig$values / sum(eig$values)
+
+pca_variance <- data.frame(
+  component = paste0("PC", seq_along(variance)),
+  explained_percent = 100 * variance,
+  cumulative_percent = 100 * cumsum(variance)
+)
+knitr::kable(pca_variance, digits = 2,
+             caption = "PCA 설명력")
+
+plot(eig$values, type = "b", pch = 16,
+     xlab = "주성분", ylab = "고유값", main = "PCA scree plot")
+abline(h = 1, lty = 2, col = "grey50")
+```
+
+PC1은 82.97%, PC2까지는 91.95%의 총분산을 설명한다. 두 번째 고유값은 1보다 작고 첫 축이 압도적이지만, scree plot의 꺾임과 종목군 대비를 시각화하려는 목적에서 두 축을 살펴본다.
+
+```{r pca-loadings}
+# 변수와 주성분 점수의 상관: eigenvector × sqrt(eigenvalue)
+pca_loadings <- eig$vectors[, 1:2, drop = FALSE] %*%
+  diag(sqrt(eig$values[1:2]))
+rownames(pca_loadings) <- colnames(X)
+colnames(pca_loadings) <- c("PC1", "PC2")
+knitr::kable(pca_loadings, digits = 3,
+             caption = "변수–주성분 상관")
+
+plot(pca_loadings, type = "n", xlim = c(-1, 1), ylim = c(-1, 1),
+     xlab = "PC1", ylab = "PC2", main = "PCA loading structure")
+arrows(0, 0, pca_loadings[, 1], pca_loadings[, 2],
+       length = 0.08, col = "#2C7FB8")
+text(pca_loadings, labels = rownames(pca_loadings), pos = 3, cex = 0.85)
+abline(h = 0, v = 0, col = "grey70")
+```
+
+PC1은 모든 종목에 절대값 0.86 이상으로 크게 적재되어 기록 전반의 공통 변동을 요약한다. PC2는 100~400m와 800m 이상에서 부호가 갈려 단거리와 중·장거리 기록의 상대적 대비를 나타낸다. 주성분의 부호는 뒤집어도 같은 해이므로 방향보다 상대적 패턴이 중요하다.
+
+# Factor Analysis
+
+## Principal-component factor analysis
+
+```{r pcfa}
+pcfa_loadings <- eig$vectors[, 1:2, drop = FALSE] %*%
+  diag(sqrt(eig$values[1:2]))
+rownames(pcfa_loadings) <- colnames(X)
+colnames(pcfa_loadings) <- c("PCFA1", "PCFA2")
+
+pcfa_contribution <- 100 * colSums(pcfa_loadings^2) / ncol(X)
+knitr::kable(pcfa_loadings, digits = 3,
+             caption = "PCFA 적재량(비회전)")
+```
+
+PCFA는 PCA의 첫 두 축과 같은 계산 구조를 사용하므로 첫 공통 축과 단거리–중장거리 대비를 그대로 보인다. 두 요인의 총기여율은 `r round(sum(pcfa_contribution), 2)`%다.
+
+## Maximum-likelihood factor analysis
+
+```{r mlfa}
+Z <- scale(X)
+mlfa <- factanal(Z, factors = 2, rotation = "none", scores = "regression")
+mlfa_loadings <- unclass(mlfa$loadings)
+mlfa_contribution <- 100 * colSums(mlfa_loadings^2) / ncol(X)
+
+knitr::kable(mlfa_loadings, digits = 3,
+             caption = "MLFA 적재량(비회전)")
+
+fit_table <- data.frame(
+  statistic = unname(mlfa$STATISTIC),
+  df = mlfa$dof,
+  p_value = unname(mlfa$PVAL),
+  two_factor_common_variance_percent = sum(mlfa_contribution)
+)
+knitr::kable(fit_table, digits = 4,
+             caption = "MLFA 적합도와 적재 제곱합 비율")
+```
+
+MLFA의 첫 요인도 모든 종목에 크게 적재된다. 두 번째 요인은 단거리와 장거리의 대비를 일부 보이지만, 800m와 마라톤 적재는 0에 가깝고 PCFA보다 패턴이 약하다. 2요인 MLFA의 적재 제곱합은 변수 총수 대비 88.62%다. 적합도 검정의 작은 p-value는 2요인 모형이 상관구조를 완전히 설명하지 못한다는 경고이므로 결과를 확정적 잠재구조로 보지 않는다.
+
+# PCA와 FA 비교
+
+```{r method-comparison}
+comparison <- data.frame(
+  method = c("PCA", "PCFA", "MLFA"),
+  target = c("총분산 요약", "주성분 기반 공통성 요약", "공통요인 모형"),
+  first_axis_percent = c(100 * variance[1], pcfa_contribution[1], mlfa_contribution[1]),
+  first_two_percent = c(100 * sum(variance[1:2]),
+                        sum(pcfa_contribution), sum(mlfa_contribution))
+)
+knitr::kable(comparison, digits = 2,
+             caption = "방법별 목적과 두 축의 요약")
+```
+
+세 방법 모두 강한 첫 공통 축을 보이며, 두 번째 축에서 단거리와 중·장거리의 상대적 차이가 나타난다는 점은 같다. 그러나 PCA의 설명력은 총분산 비율이고, FA의 적재 제곱합은 공통분산 모형의 요약이므로 같은 지표처럼 직접 비교해서는 안 된다.
+
+# 한계
+
+- 두 차원 선택은 scree plot과 누적 설명력에 주로 의존한다. parallel analysis나 별도 표본 검증이 없어 요인 수 선택 근거가 제한적이다.
+- 국가기록은 선수 개인의 능력이나 국가 정책의 인과효과를 뜻하지 않는다.
+- 2005년의 국가별 최고기록이라는 표본 구성과 측정 맥락에 결과가 의존한다.
+- 비회전 해는 원본 분석과의 비교를 위한 선택이다. 다른 회전은 두 번째 요인의 해석을 바꿀 수 있다.
+
+```{r session-info}
+sessionInfo()
+```

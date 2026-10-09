@@ -1,0 +1,142 @@
+---
+title: "Korea Zinc: 주가 수준에서 확인한 시계열 구조와 단기 기준선"
+output:
+  html_document:
+    toc: true
+    self_contained: true
+    number_sections: true
+lang: ko
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, warning = FALSE, message = FALSE,
+  fig.path = "figures/", fig.width = 8, fig.height = 4.8,
+  dpi = 120
+)
+options(scipen = 999)
+```
+
+# 분석 질문
+
+2024년 고려아연 종가의 시계열 구조를 확인하고, 가격 수준 ARIMA(0,1,0)이 제공하는 5거래일 예측을 제한적인 기준선으로 평가한다.
+
+# 데이터와 인덱스 선택
+
+자료는 KRX Data Marketplace의 고려아연(010130, KOSPI) 일별 종가다. KRX 이용약관 때문에 원자료는 저장소에 포함하지 않는다. 아래 상대경로에 사용자가 직접 내려받은 두 파일이 있어야 한다.
+
+```{r load-data}
+train_path <- "../../data/raw/korea-zinc-2024.csv"
+test_path  <- "../../data/raw/korea-zinc-2025-first-5.csv"
+
+if (!all(file.exists(c(train_path, test_path)))) {
+  stop("KRX CSV가 없습니다. data/README.md의 획득·배치 안내를 확인하세요.")
+}
+
+read_krx_close <- function(path) {
+  # 원본 첫 행의 CP949 한글 열 이름을 건너뛰고 두 열을 명시한다.
+  x <- read.csv(path, skip = 1, header = FALSE,
+                col.names = c("date", "price"))
+  x <- x[complete.cases(x), ]
+  x$date <- as.Date(x$date)
+  x <- x[order(x$date), ]
+  rownames(x) <- NULL
+  x
+}
+
+train <- read_krx_close(train_path)
+actual <- head(read_krx_close(test_path), 5)
+stopifnot(nrow(train) == 244, nrow(actual) == 5)
+
+knitr::kable(rbind(head(train, 3), tail(train, 3)),
+             caption = "2024년 거래일 종가의 시작과 끝")
+```
+
+초기 분석의 한 버전은 휴장일을 전일 가격으로 채우고 `frequency = 365`인 시계열을 만들었다. 동일 가격의 반복은 인위적 자기상관을 만들 수 있으므로 여기서는 실제 **거래일 순서**를 인덱스로 사용한다. 달력 간격의 차이는 반영하지 못하지만 휴일 가격을 만들어 넣지는 않는다.
+
+# 시계열 구조
+
+```{r price-series}
+plot(train$date, train$price, type = "l", lwd = 1.2,
+     xlab = "거래일", ylab = "종가(원)",
+     main = "2024 Korea Zinc closing price")
+```
+
+가격 수준은 일정한 평균 주위를 오가기보다 하반기, 특히 4분기에 수준과 변동폭이 크게 달라진다. 가격 수준 ARIMA는 금융자료의 이상적 분석이라기보다 비정상성과 차분의 역할을 보여주는 교육 목적 분석이다.
+
+```{r acf-difference}
+price <- train$price
+dprice <- diff(price)
+par(mfrow = c(1, 2))
+acf(price, main = "가격 수준 ACF")
+acf(dprice, main = "1차 차분 ACF")
+par(mfrow = c(1, 1))
+```
+
+# ARIMA 기준모형과 잔차 진단
+
+```{r fit-diagnostics}
+fit <- arima(price, order = c(0, 1, 0),
+             include.mean = FALSE, method = "ML")
+
+lags <- c(6, 12, 18, 24)
+diagnostics <- data.frame(
+  lag = lags,
+  p_value = vapply(
+    lags,
+    function(k) Box.test(residuals(fit), lag = k,
+                         type = "Ljung-Box")$p.value,
+    numeric(1)
+  )
+)
+knitr::kable(diagnostics, digits = 4,
+             caption = "ARIMA(0,1,0) 잔차 Ljung–Box 검정")
+```
+
+lag 6, 12, 18에서 5% 수준의 잔차 자기상관이 남는다. 따라서 이 모형이 구조를 충분히 설명한다고 보기 어렵고, 이후 예측은 **baseline forecast**로만 해석한다.
+
+# 5거래일 기준선 예측
+
+```{r forecast}
+fc <- predict(fit, n.ahead = 5)
+forecast_table <- data.frame(
+  date = actual$date,
+  forecast = as.numeric(fc$pred),
+  lower_95 = as.numeric(fc$pred - qnorm(0.975) * fc$se),
+  upper_95 = as.numeric(fc$pred + qnorm(0.975) * fc$se),
+  actual = actual$price
+)
+forecast_table$inside_95 <- with(
+  forecast_table,
+  actual >= lower_95 & actual <= upper_95
+)
+knitr::kable(forecast_table, digits = 0,
+             caption = "5거래일 기준선 예측과 실제 종가")
+
+ylim <- range(forecast_table[c("lower_95", "upper_95", "actual")])
+plot(forecast_table$date, forecast_table$forecast, type = "l", lwd = 2,
+     ylim = ylim, xlab = "날짜", ylab = "종가(원)",
+     main = "ARIMA(0,1,0) baseline forecast")
+polygon(c(forecast_table$date, rev(forecast_table$date)),
+        c(forecast_table$lower_95, rev(forecast_table$upper_95)),
+        col = adjustcolor("grey70", 0.5), border = NA)
+lines(forecast_table$date, forecast_table$forecast, lwd = 2, col = "#2C7FB8")
+lines(forecast_table$date, forecast_table$actual,
+      lwd = 2, col = "#D95F0E", type = "o", pch = 16)
+legend("bottomleft", c("baseline", "actual", "95% prediction interval"),
+       col = c("#2C7FB8", "#D95F0E", "grey70"),
+       lty = c(1, 1, NA), pch = c(NA, 16, 15), bty = "n")
+```
+
+다섯 실제값은 모두 95% 예측구간 안에 있다. 하지만 표본이 5개뿐이고, 구간이 시차와 함께 넓어지며, 잔차 진단도 통과하지 못했다. 이 결과는 predictive validity의 입증이 아니다.
+
+# 한계
+
+- 가격 수준보다 거래일 로그수익률을 분석하는 편이 금융 시계열에 더 자연스럽다.
+- 휴일 전일값 대체와 `frequency=365`는 인위적 자기상관을 만들 수 있다.
+- 변동성 변화는 ARIMA(0,1,0)으로 설명되지 않는다. GARCH류 모형은 원본 분석 범위 밖이어서 추가하지 않았다.
+- 단 5개 미래 관측값은 외부 검증으로 충분하지 않다.
+
+```{r session-info}
+sessionInfo()
+```
