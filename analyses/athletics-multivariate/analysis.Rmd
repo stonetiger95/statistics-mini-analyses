@@ -114,7 +114,7 @@ fit_table <- data.frame(
   statistic = unname(mlfa$STATISTIC),
   df = mlfa$dof,
   p_value = unname(mlfa$PVAL),
-  two_factor_common_variance_percent = sum(mlfa_contribution)
+  two_factor_loading_ss_percent = sum(mlfa_contribution)
 )
 knitr::kable(fit_table, digits = 4,
              caption = "MLFA 적합도와 적재 제곱합 비율")
